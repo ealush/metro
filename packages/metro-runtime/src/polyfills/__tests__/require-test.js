@@ -2909,13 +2909,13 @@ describe('require', () => {
           const Refresh = createReactRefreshMock(moduleSystem);
 
           // This is the module graph:
-          //                 ┌────────┐ ┌────────┐ ┌────────┐
-          //                 │        ▼ │        ▼ │        ▼
+          //                 ┌────────┐ ┌─────────┐
+          //                 │        ▼ ▼        │
           // ┌───────┐     ┌───┐     ┌───┐     ┌───┐     ┌───┐
           // │ Root* │ ──▶ │ A │ ──▶ │ B │ ──▶ │ C │ ──▶ │ D │
           // └───────┘     └───┘     └───┘     └───┘     └───┘
-          //                           ▲        ▲         │
-          //                           └────────+─────────┘
+          //                           │                  ▲
+          //                          └──────────────────┘
           // * - refresh boundary (exports a component)
 
           const ids = Object.fromEntries([
@@ -2941,7 +2941,7 @@ describe('require', () => {
             'A.js',
             (global, require, importDefault, importAll, module, exports) => {
               const B = require(ids['B.js']);
-              module.exports = 'A = ' + B;
+              module.exports = 'A = ' + B();
             },
           );
           createModule(
@@ -2949,8 +2949,9 @@ describe('require', () => {
             ids['B.js'],
             'B.js',
             (global, require, importDefault, importAll, module, exports) => {
+              require(ids['D.js']);
               const C = require(ids['C.js']);
-              module.exports = ['B1', C].join('_');
+              module.exports = () => ['B1', C()].join('_');
             },
           );
           createModule(
@@ -2960,7 +2961,7 @@ describe('require', () => {
             (global, require, importDefault, importAll, module, exports) => {
               require(ids['B.js']);
               const D = require(ids['D.js']);
-              module.exports = ['C1', D].join('_');
+              module.exports = () => ['C1', D].join('_');
             },
           );
           createModule(
@@ -2978,7 +2979,6 @@ describe('require', () => {
           moduleSystem.__accept(
             ids['D.js'],
             (global, require, importDefault, importAll, module, exports) => {
-              require(ids['B.js']);
               module.exports = 'D2';
             },
             [],
@@ -2986,7 +2986,7 @@ describe('require', () => {
             {
               [ids['root.js']]: [],
               [ids['A.js']]: [ids['root.js']],
-              [ids['B.js']]: [ids['A.js']],
+              [ids['B.js']]: [ids['A.js'], ids['C.js'], ids['D.js']],
               [ids['C.js']]: [ids['B.js'], ids['D.js']],
               [ids['D.js']]: [ids['C.js'], ids['B.js']],
             },
