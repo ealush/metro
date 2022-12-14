@@ -637,7 +637,7 @@ if (__DEV__) {
     );
 
     if (cycles.size) {
-      // performFullRefresh('Dependency cycle', {
+      // return performFullRefresh('Dependency cycle', {
       //   source: mod,
       // });
     }
