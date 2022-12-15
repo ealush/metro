@@ -3057,7 +3057,7 @@ describe('require', () => {
               (global, require, importDefault, importAll, module, exports) => {
                 require(ids['D.js']);
                 const C = require(ids['C.js']);
-                module.exports = ['B1', C()].join('_');
+                module.exports = `B1(${C()})`;
               },
             );
             createModule(
@@ -3081,7 +3081,7 @@ describe('require', () => {
             moduleSystem.__r(ids['root.js']);
 
             expect(moduleSystem.__r(ids['A.js'])).toBe(
-              'A = B1_C1_[object Object]_D1',
+              'A = B1(C1_[object Object]_D1)',
             );
 
             moduleSystem.__accept(
@@ -3106,10 +3106,9 @@ describe('require', () => {
             expect(Refresh.performReactRefresh).toHaveBeenCalled();
             expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
 
-            // The expected outcome is that we trap modules B-C in the same refresh along with module D.
-            // This will make them update, thus producing the new result correctly.
             expect(moduleSystem.__r(ids['A.js'])).toBe(
-              'A = B1_C1_[object Object]_D2',
+              // So the problem is with the C import
+              'A = B1(C1_[object Object]_D2)',
             );
           });
         });
