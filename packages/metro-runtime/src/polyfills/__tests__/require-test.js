@@ -3058,7 +3058,7 @@ describe('require', () => {
                 require(ids['D.js']);
 
                 const C = require(ids['C.js']);
-                module.exports = `B1(${C})`;
+                module.exports = `B1{ ${C} }`;
               },
             );
             createModule(
@@ -3068,7 +3068,7 @@ describe('require', () => {
               (global, require, importDefault, importAll, module, exports) => {
                 const B = require(ids['B.js']);
                 const D = require(ids['D.js']);
-                module.exports = ['C1', B, D].join('_');
+                module.exports = `<---C1( ${[B, D].join('_')} )--->`;
               },
             );
             createModule(
@@ -3082,7 +3082,7 @@ describe('require', () => {
             moduleSystem.__r(ids['root.js']);
 
             expect(moduleSystem.__r(ids['A.js'])).toBe(
-              'A = B1(C1_[object Object]_D1)',
+              'A = B1{ <---C1( [object Object]_D1 )---> }',
             );
 
             moduleSystem.__accept(
@@ -3115,7 +3115,7 @@ describe('require', () => {
 
             expect(moduleSystem.__r(ids['A.js'])).toBe(
               // So the problem is with the C import
-              'A = B1(C1_[object Object]_D2)',
+              'A = B1 { <---( C1_[object Object]_D2 )---> }',
             );
           });
         });
