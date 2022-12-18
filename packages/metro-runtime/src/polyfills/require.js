@@ -610,15 +610,18 @@ if (__DEV__) {
       });
 
       // Reload and redefine the inverse dependencies of the current module
-      inverseDeps.forEach(inverseDep => {
+      Array.from(inverseDeps).forEach(inverseDep => {
         const mod = modules[inverseDep];
 
         if (!mod) {
           return;
         }
 
+        mod.hot?.dispose?.();
         Reflect.deleteProperty(modules, inverseDep);
         define(mod.factory, inverseDep, mod.dependencyMap ?? []);
+
+        mod.hot?.accept?.();
       });
 
       const cyclesArray = Array.from(cycles);
@@ -631,22 +634,18 @@ if (__DEV__) {
             return null;
           }
 
-          const mods = [
-            {
-              id,
-              factory: mod.factory,
-              dependencyMap: mod.dependencyMap ?? [],
-            },
-          ];
+          const module = {
+            id,
+            module: mod,
+          };
 
-          mods.forEach(mod => Reflect.deleteProperty(modules, id));
+          Reflect.deleteProperty(modules, id);
 
-          return mods;
+          return module;
         })
         .filter(Boolean)
-        .flat()
-        .forEach(mod => {
-          define(mod.factory, mod.id, mod.dependencyMap);
+        .forEach(({module, id}) => {
+          define(module.factory, id, module.dependencyMap ?? []);
         });
     }
 

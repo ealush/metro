@@ -3008,6 +3008,7 @@ describe('require', () => {
         describe('When the cycles involves the same module being used by multiple modules', () => {
           it('Performs the update without bailing', () => {
             createModuleSystem(moduleSystem, true, '');
+
             const Refresh = createReactRefreshMock(moduleSystem);
 
             // This is the module graph:
@@ -3113,9 +3114,9 @@ describe('require', () => {
               'D2',
             );
 
-            expect(moduleSystem.__r(ids['A.js'])).toBe(
+            expect(moduleSystem.__r(ids['C.js'])).toBe(
               // So the problem is with the C import
-              'A = B1 { <---( C1_[object Object]_D2 )---> }',
+              '<---( C1_[object Object]_D2 )--->',
             );
           });
         });
