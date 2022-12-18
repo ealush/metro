@@ -3056,8 +3056,9 @@ describe('require', () => {
               'B.js',
               (global, require, importDefault, importAll, module, exports) => {
                 require(ids['D.js']);
+
                 const C = require(ids['C.js']);
-                module.exports = `B1(${C()})`;
+                module.exports = `B1(${C})`;
               },
             );
             createModule(
@@ -3067,7 +3068,7 @@ describe('require', () => {
               (global, require, importDefault, importAll, module, exports) => {
                 const B = require(ids['B.js']);
                 const D = require(ids['D.js']);
-                module.exports = () => ['C1', B, D].join('_');
+                module.exports = ['C1', B, D].join('_');
               },
             );
             createModule(
@@ -3105,6 +3106,12 @@ describe('require', () => {
 
             expect(Refresh.performReactRefresh).toHaveBeenCalled();
             expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
+
+            expect(moduleSystem.__r(ids['D.js'])).toBe(
+              // So the problem is with the C import
+
+              'D2',
+            );
 
             expect(moduleSystem.__r(ids['A.js'])).toBe(
               // So the problem is with the C import

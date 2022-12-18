@@ -583,6 +583,73 @@ if (__DEV__) {
 
     let didBailOut = false;
 
+    function reloadCycles(
+      cycles: Set<ModuleID>,
+      inverseDependencies: {[key: ModuleID]: Array<ModuleID>},
+    ) {
+      // Set the visited flag for each module in the cycles set to avoid infinite recursion
+      const visited = new Set<ModuleID>();
+      cycles.forEach(id => visited.add(id));
+
+      // Initialize an array to store the inverse dependencies of the current module
+      const inverseDeps = new Set<ModuleID>();
+
+      // Climb up the inverse dependencies and add them to the array
+      cycles.forEach(moduleId => {
+        let inverseDep = inverseDependencies[moduleId];
+        while (inverseDep != null) {
+          const current = inverseDep.shift();
+          if (visited.has(current)) {
+            // A cycle has been detected, so we break the loop
+            break;
+          }
+          inverseDeps.add(current);
+          visited.add(current);
+          inverseDep = inverseDependencies[current];
+        }
+      });
+
+      // Reload and redefine the inverse dependencies of the current module
+      inverseDeps.forEach(inverseDep => {
+        const mod = modules[inverseDep];
+
+        if (!mod) {
+          return;
+        }
+
+        Reflect.deleteProperty(modules, inverseDep);
+        define(mod.factory, inverseDep, mod.dependencyMap ?? []);
+      });
+
+      const cyclesArray = Array.from(cycles);
+
+      cyclesArray
+        .map((id: ModuleID) => {
+          const mod = modules[id];
+
+          if (!mod) {
+            return null;
+          }
+
+          const mods = [
+            {
+              id,
+              factory: mod.factory,
+              dependencyMap: mod.dependencyMap ?? [],
+            },
+          ];
+
+          mods.forEach(mod => Reflect.deleteProperty(modules, id));
+
+          return mods;
+        })
+        .filter(Boolean)
+        .flat()
+        .forEach(mod => {
+          define(mod.factory, mod.id, mod.dependencyMap);
+        });
+    }
+
     const {updatedModuleIDs, cycles} = topologicalSort(
       [id], // Start with the changed module and go upwards
       function getEdges(pendingID) {
@@ -637,9 +704,7 @@ if (__DEV__) {
     );
 
     if (cycles.size) {
-      // return performFullRefresh('Dependency cycle', {
-      //   source: mod,
-      // });
+      reloadCycles(cycles, inverseDependencies);
     }
 
     if (didBailOut) {
