@@ -705,7 +705,7 @@ if (__DEV__) {
     }
 
     // Reversing the list ensures that we execute modules in the correct order.
-    updatedModuleIDs.reverse(); // TODO: Reenable
+    updatedModuleIDs.reverse();
 
     // If we reached here, it is likely that hot reload will be successful.
     // Run the actual factories.
