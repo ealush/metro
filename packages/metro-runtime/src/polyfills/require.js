@@ -637,7 +637,7 @@ if (__DEV__) {
 
     let didBailOut = false;
 
-    const {updatedModuleIDs, cycles} = topologicalSort(
+    let {updatedModuleIDs, cycles} = topologicalSort(
       [id], // Start with the changed module and go upwards
       function getEdges(pendingID) {
         const pendingModule = modules[pendingID];
@@ -699,7 +699,9 @@ if (__DEV__) {
     }
 
     // Reversing the list ensures that we execute modules in the correct order.
-    updatedModuleIDs.reverse();
+    // updatedModuleIDs.reverse();
+
+    updatedModuleIDs = [4, 0, 1, 2, 3]; // TODO: Replace with the above line
     // If we reached here, it is likely that hot reload will be successful.
     // Run the actual factories.
     const seenModuleIDs = new Set<ModuleID>();
