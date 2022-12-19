@@ -538,6 +538,60 @@ if (__DEV__) {
 
   let reactRefreshTimeout: null | TimeoutID = null;
 
+  function reloadCycles(
+    cycles: Set<ModuleID>,
+    inverseDependencies: {[key: ModuleID]: Array<ModuleID>},
+  ) {
+    // Set the visited flag for each module in the cycles set to avoid infinite recursion
+    const visited = new Set<ModuleID>();
+    cycles.forEach(id => visited.add(id));
+
+    // Initialize an array to store the inverse dependencies of the current module
+    const inverseDeps = new Set<ModuleID>();
+
+    // Climb up the inverse dependencies and add them to the array
+    cycles.forEach(moduleId => {
+      let inverseDep = inverseDependencies[moduleId];
+      while (inverseDep != null) {
+        const current = inverseDep.shift();
+
+        if (visited.has(current)) {
+          // A cycle has been detected, so we break the loop
+          break;
+        }
+
+        if (current == null) {
+          break;
+        }
+        inverseDeps.add(current);
+        visited.add(current);
+        inverseDep = inverseDependencies[current];
+      }
+    });
+
+    // Reload and redefine the inverse dependencies of the current module
+    const modulesToReload = Array.from(inverseDeps)
+      .concat(Array.from(cycles))
+      .map(id => {
+        const mod = modules[id];
+
+        if (!mod) {
+          return null;
+        }
+
+        mod.hot?.dispose?.();
+        Reflect.deleteProperty(modules, id);
+        return {module: mod, id};
+      });
+
+    modulesToReload.filter(Boolean).map(({module, id}) => {
+      define(module.factory, id, module.dependencyMap ?? []);
+      modules[id]?.hot?.accept?.();
+
+      return {module, id};
+    });
+  }
+
   function metroHotUpdateModule(
     id: ModuleID,
     factory: FactoryFn,
@@ -582,72 +636,6 @@ if (__DEV__) {
     // have side effects and lead to confusing and meaningless crashes.
 
     let didBailOut = false;
-
-    function reloadCycles(
-      cycles: Set<ModuleID>,
-      inverseDependencies: {[key: ModuleID]: Array<ModuleID>},
-    ) {
-      // Set the visited flag for each module in the cycles set to avoid infinite recursion
-      const visited = new Set<ModuleID>();
-      cycles.forEach(id => visited.add(id));
-
-      // Initialize an array to store the inverse dependencies of the current module
-      const inverseDeps = new Set<ModuleID>();
-
-      // Climb up the inverse dependencies and add them to the array
-      cycles.forEach(moduleId => {
-        let inverseDep = inverseDependencies[moduleId];
-        while (inverseDep != null) {
-          const current = inverseDep.shift();
-          if (visited.has(current)) {
-            // A cycle has been detected, so we break the loop
-            break;
-          }
-          inverseDeps.add(current);
-          visited.add(current);
-          inverseDep = inverseDependencies[current];
-        }
-      });
-
-      // Reload and redefine the inverse dependencies of the current module
-      Array.from(inverseDeps).forEach(inverseDep => {
-        const mod = modules[inverseDep];
-
-        if (!mod) {
-          return;
-        }
-
-        mod.hot?.dispose?.();
-        Reflect.deleteProperty(modules, inverseDep);
-        define(mod.factory, inverseDep, mod.dependencyMap ?? []);
-
-        mod.hot?.accept?.();
-      });
-
-      const cyclesArray = Array.from(cycles);
-
-      cyclesArray
-        .map((id: ModuleID) => {
-          const mod = modules[id];
-
-          if (!mod) {
-            return null;
-          }
-
-          const module = {
-            id,
-            module: mod,
-          };
-
-          Reflect.deleteProperty(modules, id);
-
-          return module;
-        })
-        .filter(Boolean)
-        .forEach(({module, id}) => {
-          define(module.factory, id, module.dependencyMap ?? []);
-        });
-    }
 
     const {updatedModuleIDs, cycles} = topologicalSort(
       [id], // Start with the changed module and go upwards
@@ -712,7 +700,6 @@ if (__DEV__) {
 
     // Reversing the list ensures that we execute modules in the correct order.
     updatedModuleIDs.reverse();
-
     // If we reached here, it is likely that hot reload will be successful.
     // Run the actual factories.
     const seenModuleIDs = new Set<ModuleID>();
@@ -724,6 +711,7 @@ if (__DEV__) {
       seenModuleIDs.add(updatedID);
 
       const updatedMod = modules[updatedID];
+
       if (updatedMod == null) {
         throw new Error('[Refresh] Expected to find the updated module.');
       }
@@ -733,6 +721,7 @@ if (__DEV__) {
         updatedID === id ? factory : undefined,
         updatedID === id ? dependencyMap : undefined,
       );
+
       const nextExports = updatedMod.publicModule.exports;
 
       if (didError) {
