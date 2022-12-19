@@ -696,16 +696,18 @@ if (__DEV__) {
       }, // Should we stop?
     );
 
-    if (cycles.size) {
-      reloadCycles(cycles, inverseDependencies, id, factory);
-    }
-
     if (didBailOut) {
       return;
     }
 
-    // Reversing the list ensures that we execute modules in the correct order.
-    updatedModuleIDs.reverse();
+    if (cycles.size) {
+      reloadCycles(cycles, inverseDependencies, id, factory);
+      // only reload the root module, go down from there...
+      updatedModuleIDs.length = 1;
+    } else {
+      // Reversing the list ensures that we execute modules in the correct order.
+      updatedModuleIDs.reverse();
+    }
 
     // If we reached here, it is likely that hot reload will be successful.
     // Run the actual factories.

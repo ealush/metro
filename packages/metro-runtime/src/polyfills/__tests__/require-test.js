@@ -3006,7 +3006,7 @@ describe('require', () => {
         });
 
         describe('When the cycles involves the same module being used by multiple modules', () => {
-          it.only('Performs the update without bailing', () => {
+          it('Performs the update without bailing', () => {
             createModuleSystem(moduleSystem, true, '');
 
             const Refresh = createReactRefreshMock(moduleSystem);
@@ -3112,11 +3112,7 @@ describe('require', () => {
             expect(Refresh.performReactRefresh).toHaveBeenCalled();
             expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
 
-            expect(moduleSystem.__r(ids['D.js'])).toBe(
-              // So the problem is with the C import
-
-              'D2',
-            );
+            expect(moduleSystem.__r(ids['D.js'])).toBe('D2');
 
             expect(moduleSystem.__r(ids['A.js'])).toBe(
               'A = B1{ <---C1( [object Object]_D2 )---> }',
@@ -3129,8 +3125,7 @@ describe('require', () => {
             expect(moduleSystem.__r(ids['C.js'])).toBe(
               // So the problem is with the C import
               '<---C1( [object Object]_D2 )--->',
-            ); // This test fails, and this is the output:
-            // <---C1( B1{ <---C1( [object Object]_D2 )---> }_D2 )--->
+            );
           });
         });
       });
