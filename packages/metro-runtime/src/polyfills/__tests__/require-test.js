@@ -3115,22 +3115,18 @@ describe('require', () => {
             );
 
             expect(moduleSystem.__r(ids['A.js'])).toBe(
-              // So the problem is with the C import
-
               'A = B1{ <---C1( [object Object]_D2 )---> }',
             );
 
             expect(moduleSystem.__r(ids['B.js'])).toBe(
-              // So the problem is with the C import
-
               'B1{ <---C1( [object Object]_D2 )---> }',
             );
 
-            expect(moduleSystem.__r(ids['B.js'])).toBe(
+            expect(moduleSystem.__r(ids['C.js'])).toBe(
               // So the problem is with the C import
-              '<---( C1_[object Object]_D2 )--->',
+              '<---C1( [object Object]_D2 )--->',
             ); // This test fails, and this is the output:
-            // <---C1( B1{ [object Object] }_D2 )--->
+            // <---C1( B1{ <---C1( [object Object]_D2 )---> }_D2 )--->
           });
         });
       });

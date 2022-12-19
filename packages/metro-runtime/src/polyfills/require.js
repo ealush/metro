@@ -541,6 +541,8 @@ if (__DEV__) {
   function reloadCycles(
     cycles: Set<ModuleID>,
     inverseDependencies: {[key: ModuleID]: Array<ModuleID>},
+    changedModuleID: ModuleID,
+    newFactory: FactoryFn,
   ) {
     // Set the visited flag for each module in the cycles set to avoid infinite recursion
     const visited = new Set<ModuleID>();
@@ -585,7 +587,11 @@ if (__DEV__) {
       });
 
     modulesToReload.filter(Boolean).map(({module, id}) => {
-      define(module.factory, id, module.dependencyMap ?? []);
+      define(
+        id === changedModuleID ? newFactory : module.factory,
+        id,
+        module.dependencyMap ?? [],
+      );
       modules[id]?.hot?.accept?.();
 
       return {module, id};
@@ -637,7 +643,7 @@ if (__DEV__) {
 
     let didBailOut = false;
 
-    let {updatedModuleIDs, cycles} = topologicalSort(
+    const {updatedModuleIDs, cycles} = topologicalSort(
       [id], // Start with the changed module and go upwards
       function getEdges(pendingID) {
         const pendingModule = modules[pendingID];
@@ -691,7 +697,7 @@ if (__DEV__) {
     );
 
     if (cycles.size) {
-      reloadCycles(cycles, inverseDependencies);
+      reloadCycles(cycles, inverseDependencies, id, factory);
     }
 
     if (didBailOut) {
@@ -699,9 +705,8 @@ if (__DEV__) {
     }
 
     // Reversing the list ensures that we execute modules in the correct order.
-    // updatedModuleIDs.reverse();
+    // updatedModuleIDs.reverse(); // TODO: Reenable
 
-    updatedModuleIDs = [4, 0, 1, 2, 3]; // TODO: Replace with the above line
     // If we reached here, it is likely that hot reload will be successful.
     // Run the actual factories.
     const seenModuleIDs = new Set<ModuleID>();
