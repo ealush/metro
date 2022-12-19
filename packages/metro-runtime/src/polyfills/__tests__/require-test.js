@@ -3086,6 +3086,10 @@ describe('require', () => {
               'A = B1{ <---C1( [object Object]_D1 )---> }',
             );
 
+            expect(moduleSystem.__r(ids['C.js'])).toBe(
+              '<---C1( [object Object]_D1 )--->',
+            );
+
             moduleSystem.__accept(
               ids['D.js'],
               (global, require, importDefault, importAll, module, exports) => {
