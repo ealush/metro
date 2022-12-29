@@ -505,22 +505,22 @@ describe('require', () => {
     it('throws an error when a module throws an error', () => {
       createModuleSystem(moduleSystem, false, '');
 
-      createModule(
-        moduleSystem,
-        0,
-        'foo.js',
+      const error = new Error('foo!');
+      const factory = jest.fn(
         (global, require, importDefault, importAll, module) => {
-          throw new Error('foo!');
+          throw error;
         },
       );
+      createModule(moduleSystem, 0, 'foo.js', factory);
 
       // First time it throws the original error.
-      expect(() => moduleSystem.__r(0)).toThrow('foo!');
+      expect(() => moduleSystem.__r(0)).toThrowStrictEquals(error);
 
-      // Afterwards it throws a wrapped error (the module is not reevaluated).
-      expect(() => moduleSystem.__r(0)).toThrow(
-        'Requiring module "0", which threw an exception: Error: foo!',
-      );
+      // Afterwards it throws the exact same error.
+      expect(() => moduleSystem.__r(0)).toThrowStrictEquals(error);
+
+      // The module is not reevaluated.
+      expect(factory).toHaveBeenCalledTimes(1);
     });
 
     it('can make use of the dependencyMap correctly', () => {
@@ -2623,113 +2623,6 @@ describe('require', () => {
       expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
     });
 
-    it('bails out if the update involves a cycle', () => {
-      // NOTE: A sufficiently clever algorithm may be able to avoid bailing out
-      // in some cases, but right now this is how we handle cycles; it beats
-      // leaving stale versions of updated modules in the graph.
-
-      createModuleSystem(moduleSystem, true, '');
-      const Refresh = createReactRefreshMock(moduleSystem);
-
-      // This is the module graph:
-      // ┌─────────┐      ┌─────────┐ ────▶ ┌─────────┐
-      // |  Root*  | ───▶ │ MiddleA │ ◀──── | MiddleC |
-      // └─────────┘      └─────────┘       └─────────┘
-      //                     │ ▲              |
-      //                     │ │              |
-      //                     ▼ │              ▼
-      //                  ┌─────────┐       ┌────────┐
-      //                  | MiddleB | ────▶ |  Leaf  |
-      //                  └─────────┘       └────────┘
-      //
-      // * - refresh boundary (exports a component)
-
-      const ids = Object.fromEntries([
-        ['root.js', 0],
-        ['middleA.js', 1],
-        ['middleB.js', 2],
-        ['middleC.js', 3],
-        ['leaf.js', 4],
-      ]);
-
-      createModule(
-        moduleSystem,
-        ids['root.js'],
-        'root.js',
-        (global, require, importDefault, importAll, module, exports) => {
-          require(ids['middleA.js']);
-          module.exports = function Root() {};
-        },
-      );
-      createModule(
-        moduleSystem,
-        ids['middleA.js'],
-        'middleA.js',
-        (global, require, importDefault, importAll, module, exports) => {
-          const MB = require(ids['middleB.js']);
-          require(ids['middleC.js']);
-          module.exports = MB;
-        },
-      );
-      createModule(
-        moduleSystem,
-        ids['middleB.js'],
-        'middleB.js',
-        (global, require, importDefault, importAll, module, exports) => {
-          require(ids['middleA.js']);
-          const L = require(ids['leaf.js']); // Import leaf
-          module.exports = L;
-        },
-      );
-      createModule(
-        moduleSystem,
-        ids['middleC.js'],
-        'middleC.js',
-        (global, require, importDefault, importAll, module, exports) => {
-          require(ids['middleA.js']);
-          require(ids['leaf.js']);
-          module.exports = 0;
-        },
-      );
-      createModule(
-        moduleSystem,
-        ids['leaf.js'],
-        'leaf.js',
-        (global, require, importDefault, importAll, module, exports) => {
-          module.exports = 'version 1';
-        },
-      );
-      moduleSystem.__r(ids['root.js']);
-
-      expect(moduleSystem.__r('middleA.js')).toBe('version 1');
-
-      moduleSystem.__accept(
-        ids['leaf.js'],
-        (global, require, importDefault, importAll, module, exports) => {
-          module.exports = 'version 2';
-        },
-        [],
-        // Inverse dependency map.
-        {
-          [ids['leaf.js']]: [ids['middleC.js'], ids['middleB.js']],
-          [ids['middleC.js']]: [ids['middleA.js']],
-          [ids['middleB.js']]: [ids['middleA.js']],
-          [ids['middleA.js']]: [
-            ids['middleC.js'],
-            ids['middleB.js'],
-            ids['root.js'],
-          ],
-          [ids['root.js']]: [],
-        },
-        undefined,
-      );
-
-      jest.runAllTimers();
-
-      expect(Refresh.performReactRefresh).not.toHaveBeenCalled();
-      expect(Refresh.performFullRefresh).toHaveBeenCalled();
-    });
-
     it('performs an update when there is an unaffected cycle', () => {
       createModuleSystem(moduleSystem, true, '');
       const Refresh = createReactRefreshMock(moduleSystem);
@@ -2819,7 +2712,7 @@ describe('require', () => {
     });
 
     describe('Cycle Resolution', () => {
-      describe('sanity (We know what works well)', () => {
+      describe('sanity: We know what works well', () => {
         it('Performs the update without a full refresh', () => {
           createModuleSystem(moduleSystem, true, '');
           const Refresh = createReactRefreshMock(moduleSystem);
@@ -2875,7 +2768,6 @@ describe('require', () => {
             },
           );
           moduleSystem.__r(ids['root.js']);
-
           expect(moduleSystem.__r(ids['A.js'])).toBe('A = B1_C');
 
           moduleSystem.__accept(
@@ -2890,11 +2782,29 @@ describe('require', () => {
               [ids['root.js']]: [],
               [ids['A.js']]: [ids['root.js']],
               [ids['B.js']]: [ids['A.js']],
+              [ids['C.js']]: [ids['B.js']],
+            },
+            undefined,
+          );
+          expect(moduleSystem.__r(ids['C.js'])).toBe('C');
+          moduleSystem.__accept(
+            ids['C.js'],
+            (global, require, importDefault, importAll, module, exports) => {
+              module.exports = 'C2';
+            },
+            [],
+            // Inverse dependency map.
+            {
+              [ids['root.js']]: [],
+              [ids['A.js']]: [ids['root.js']],
+              [ids['B.js']]: [ids['A.js']],
+              [ids['C.js']]: [ids['B.js']],
             },
             undefined,
           );
 
-          expect(moduleSystem.__r(ids['A.js'])).toBe('A = B2_C');
+          expect(moduleSystem.__r(ids['C.js'])).toBe('C2');
+          expect(moduleSystem.__r(ids['A.js'])).toBe('A = B2_C2');
 
           jest.runAllTimers();
 
@@ -2903,157 +2813,68 @@ describe('require', () => {
         });
       });
 
-      describe('When the cycle is contained', () => {
-        describe('When a the result requires a function call', () => {
-          it('Performs the update without bailing', () => {
-            createModuleSystem(moduleSystem, true, '');
-            const Refresh = createReactRefreshMock(moduleSystem);
+      describe('Affected Cycles', () => {
+        type KModules = 'root.js' | 'A.js' | 'B.js' | 'C.js' | 'D.js';
 
-            // This is the module graph:
-            //                 ┌────────┐ ┌─────────┐
-            //                 │        ▼ ▼        │
-            // ┌───────┐     ┌───┐     ┌───┐     ┌───┐     ┌───┐
-            // │ Root* │ ──▶ │ A │ ──▶ │ B │ ──▶ │ C │ ──▶ │ D │
-            // └───────┘     └───┘     └───┘     └───┘     └───┘
-            //                           │                  ▲
-            //                          └──────────────────┘
-            // * - refresh boundary (exports a component)
-
-            const ids = Object.fromEntries([
-              ['root.js', 0],
-              ['A.js', 1],
-              ['B.js', 2],
-              ['C.js', 3],
-              ['D.js', 4],
-            ]);
-
-            createModule(
-              moduleSystem,
-              ids['root.js'],
-              'root.js',
-              (global, require, importDefault, importAll, module, exports) => {
-                require(ids['A.js']);
-                module.exports = function Root() {};
-              },
-            );
-            createModule(
-              moduleSystem,
-              ids['A.js'],
-              'A.js',
-              (global, require, importDefault, importAll, module, exports) => {
-                const B = require(ids['B.js']);
-                module.exports = 'A = ' + B();
-              },
-            );
-            createModule(
-              moduleSystem,
-              ids['B.js'],
-              'B.js',
-              (global, require, importDefault, importAll, module, exports) => {
-                require(ids['D.js']);
-                const C = require(ids['C.js']);
-                module.exports = () => ['B1', C()].join('_');
-              },
-            );
-            createModule(
-              moduleSystem,
-              ids['C.js'],
-              'C.js',
-              (global, require, importDefault, importAll, module, exports) => {
-                require(ids['B.js']);
-                const D = require(ids['D.js']);
-                module.exports = () => ['C1', D].join('_');
-              },
-            );
-            createModule(
-              moduleSystem,
-              ids['D.js'],
-              'D.js',
-              (global, require, importDefault, importAll, module, exports) => {
-                module.exports = 'D1';
-              },
-            );
-            moduleSystem.__r(ids['root.js']);
-
-            expect(moduleSystem.__r(ids['A.js'])).toBe('A = B1_C1_D1');
-
-            moduleSystem.__accept(
-              ids['D.js'],
-              (global, require, importDefault, importAll, module, exports) => {
-                module.exports = 'D2';
-              },
-              [],
-              // Inverse dependency map.
-              {
-                [ids['root.js']]: [],
-                [ids['A.js']]: [ids['root.js']],
-                [ids['B.js']]: [ids['A.js'], ids['C.js'], ids['D.js']],
-                [ids['C.js']]: [ids['B.js'], ids['D.js']],
-                [ids['D.js']]: [ids['C.js'], ids['B.js']],
-              },
-              undefined,
-            );
-
-            jest.runAllTimers();
-
-            expect(Refresh.performReactRefresh).toHaveBeenCalled();
-            expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
-
-            // The expected outcome is that we trap modules B-C in the same refresh along with module D.
-            // This will make them update, thus producing the new result correctly.
-            expect(moduleSystem.__r(ids['A.js'])).toBe('A = B1_C1_D2');
-          });
+        const ids: {[module: KModules]: number} = Object.freeze({
+          'root.js': 0,
+          'A.js': 1,
+          'B.js': 2,
+          'C.js': 3,
+          'D.js': 4,
         });
 
-        describe('When the cycles involves the same module being used by multiple modules', () => {
-          it('Performs the update without bailing', () => {
-            createModuleSystem(moduleSystem, true, '');
+        const inverseCycleDeps = Object.freeze({
+          [ids['root.js']]: [],
+          [ids['A.js']]: [ids['root.js']],
+          [ids['B.js']]: [ids['A.js'], ids['C.js']],
+          [ids['C.js']]: [ids['B.js']],
+          [ids['D.js']]: [ids['C.js'], ids['B.js']],
+        });
 
-            const Refresh = createReactRefreshMock(moduleSystem);
+        function createTestModuleByName(
+          fileName: KModules,
+          factory: () => any,
+        ) {
+          createModule(moduleSystem, ids[fileName], fileName, factory);
+        }
 
-            // This is the module graph:
-            /*
-                ├── root.js
-                │   └── A.js
-                │       ├── B.js
-                │       │   └── C.js
-                │       │   └── D.js
-                │       ├── C.js
-                │       │   └── B.js
-                │       │   └── D.js
-                │       └── D.js
-            */
-            // * - refresh boundary (exports a component)
+        /*
+             ├── root.js
+             │   └── A.js
+             │       ├── B.js
+             │       │   └── C.js
+             │       │   └── D.js
+             │       ├── C.js
+             │       │   └── B.js
+             │       │   └── D.js
+           */
+        // * - refresh boundary (exports a component)
 
-            const ids = Object.fromEntries([
-              ['root.js', 0],
-              ['A.js', 1],
-              ['B.js', 2],
-              ['C.js', 3],
-              ['D.js', 4],
-            ]);
+        let Refresh;
 
-            createModule(
-              moduleSystem,
-              ids['root.js'],
+        beforeEach(() => {
+          createModuleSystem(moduleSystem, true, '');
+          Refresh = createReactRefreshMock(moduleSystem);
+        });
+
+        describe('When the module being reloaded is an edge outside of the cycle', () => {
+          it('Correctly reloads the modules in the cycle without bailing', () => {
+            createTestModuleByName(
               'root.js',
               (global, require, importDefault, importAll, module, exports) => {
                 require(ids['A.js']);
                 module.exports = function Root() {};
               },
             );
-            createModule(
-              moduleSystem,
-              ids['A.js'],
+            createTestModuleByName(
               'A.js',
               (global, require, importDefault, importAll, module, exports) => {
                 const B = require(ids['B.js']);
                 module.exports = 'A = ' + B;
               },
             );
-            createModule(
-              moduleSystem,
-              ids['B.js'],
+            createTestModuleByName(
               'B.js',
               (global, require, importDefault, importAll, module, exports) => {
                 require(ids['D.js']);
@@ -3062,9 +2883,7 @@ describe('require', () => {
                 module.exports = `B1{ ${C} }`;
               },
             );
-            createModule(
-              moduleSystem,
-              ids['C.js'],
+            createTestModuleByName(
               'C.js',
               (global, require, importDefault, importAll, module, exports) => {
                 const B = require(ids['B.js']);
@@ -3072,9 +2891,7 @@ describe('require', () => {
                 module.exports = `<---C1( ${[B, D].join('_')} )--->`;
               },
             );
-            createModule(
-              moduleSystem,
-              ids['D.js'],
+            createTestModuleByName(
               'D.js',
               (global, require, importDefault, importAll, module, exports) => {
                 module.exports = 'D1';
@@ -3096,14 +2913,7 @@ describe('require', () => {
                 module.exports = 'D2';
               },
               [],
-              // Inverse dependency map.
-              {
-                [ids['root.js']]: [],
-                [ids['A.js']]: [ids['root.js']],
-                [ids['B.js']]: [ids['A.js'], ids['C.js']],
-                [ids['C.js']]: [ids['B.js'], ids['D.js']],
-                [ids['D.js']]: [ids['C.js'], ids['B.js']],
-              },
+              inverseCycleDeps,
               undefined,
             );
 
@@ -3123,12 +2933,1132 @@ describe('require', () => {
             );
 
             expect(moduleSystem.__r(ids['C.js'])).toBe(
-              // So the problem is with the C import
               '<---C1( [object Object]_D2 )--->',
             );
+          });
+
+          describe('When the affected cycle contains functions', () => {
+            it('Correctly reloads the modules in the cycle without bailing', () => {
+              createTestModuleByName(
+                'root.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  require(ids['A.js']);
+                  module.exports = function Root() {};
+                },
+              );
+              createTestModuleByName(
+                'A.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  const B = require(ids['B.js']);
+                  module.exports = 'A = ' + B();
+                },
+              );
+              createTestModuleByName(
+                'B.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  require(ids['D.js']);
+
+                  const C = require(ids['C.js']);
+                  module.exports = () => `B1{ ${C} }`;
+                },
+              );
+              createTestModuleByName(
+                'C.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  const B = require(ids['B.js']);
+                  const D = require(ids['D.js']);
+                  module.exports = `<---C1( ${[B, D].join('_')} )--->`;
+                },
+              );
+              createTestModuleByName(
+                'D.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  module.exports = 'D1';
+                },
+              );
+              moduleSystem.__r(ids['root.js']);
+
+              expect(moduleSystem.__r(ids['A.js'])).toBe(
+                'A = B1{ <---C1( [object Object]_D1 )---> }',
+              );
+
+              expect(moduleSystem.__r(ids['C.js'])).toBe(
+                '<---C1( [object Object]_D1 )--->',
+              );
+
+              moduleSystem.__accept(
+                ids['D.js'],
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  module.exports = 'D2';
+                },
+                [],
+                inverseCycleDeps,
+                undefined,
+              );
+
+              jest.runAllTimers();
+
+              expect(Refresh.performReactRefresh).toHaveBeenCalled();
+              expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
+
+              expect(moduleSystem.__r(ids['D.js'])).toBe('D2');
+
+              expect(moduleSystem.__r(ids['A.js'])).toBe(
+                'A = B1{ <---C1( [object Object]_D2 )---> }',
+              );
+
+              expect(moduleSystem.__r(ids['B.js'])()).toBe(
+                'B1{ <---C1( [object Object]_D2 )---> }',
+              );
+
+              expect(moduleSystem.__r(ids['C.js'])).toBe(
+                '<---C1( [object Object]_D2 )--->',
+              );
+            });
+
+            describe('Dynamic requires', () => {
+              it('Correctly reloads the modules in the cycle without bailing', () => {
+                createTestModuleByName(
+                  'root.js',
+                  (
+                    global,
+                    require,
+                    importDefault,
+                    importAll,
+                    module,
+                    exports,
+                  ) => {
+                    require(ids['A.js']);
+                    module.exports = function Root() {};
+                  },
+                );
+                createTestModuleByName(
+                  'A.js',
+                  (
+                    global,
+                    require,
+                    importDefault,
+                    importAll,
+                    module,
+                    exports,
+                  ) => {
+                    const B = require(ids['B.js']);
+                    module.exports = 'A = ' + B();
+                  },
+                );
+                createTestModuleByName(
+                  'B.js',
+                  (
+                    global,
+                    require,
+                    importDefault,
+                    importAll,
+                    module,
+                    exports,
+                  ) => {
+                    require(ids['D.js']);
+
+                    module.exports = () => `B1{ ${require(ids['C.js'])} }`;
+                  },
+                );
+                createTestModuleByName(
+                  'C.js',
+                  (
+                    global,
+                    require,
+                    importDefault,
+                    importAll,
+                    module,
+                    exports,
+                  ) => {
+                    const B = require(ids['B.js']);
+                    const D = require(ids['D.js']);
+                    module.exports = `<---C1( ${[B, D].join('_')} )--->`;
+                  },
+                );
+                createTestModuleByName(
+                  'D.js',
+                  (
+                    global,
+                    require,
+                    importDefault,
+                    importAll,
+                    module,
+                    exports,
+                  ) => {
+                    module.exports = 'D1';
+                  },
+                );
+                moduleSystem.__r(ids['root.js']);
+
+                expect(moduleSystem.__r(ids['A.js'])).toBe(
+                  "A = B1{ <---C1( () => `B1{ ${require(ids['C.js'])} }`_D1 )---> }",
+                );
+
+                expect(moduleSystem.__r(ids['C.js'])).toBe(
+                  "<---C1( () => `B1{ ${require(ids['C.js'])} }`_D1 )--->",
+                );
+
+                moduleSystem.__accept(
+                  ids['C.js'],
+                  (
+                    global,
+                    require,
+                    importDefault,
+                    importAll,
+                    module,
+                    exports,
+                  ) => {
+                    const B = require(ids['B.js']);
+                    const D = require(ids['D.js']);
+                    module.exports = `<---C2( ${[B, D].join('_')} )--->`;
+                  },
+                  [],
+                  inverseCycleDeps,
+                  undefined,
+                );
+
+                jest.runAllTimers();
+
+                expect(Refresh.performReactRefresh).toHaveBeenCalled();
+                expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
+
+                expect(moduleSystem.__r(ids['D.js'])).toBe('D1');
+
+                expect(moduleSystem.__r(ids['A.js'])).toBe(
+                  "A = B1{ <---C2( () => `B1{ ${require(ids['C.js'])} }`_D1 )---> }",
+                );
+
+                expect(moduleSystem.__r(ids['B.js'])()).toBe(
+                  "B1{ <---C2( () => `B1{ ${require(ids['C.js'])} }`_D1 )---> }",
+                );
+
+                expect(moduleSystem.__r(ids['C.js'])).toBe(
+                  "<---C2( () => `B1{ ${require(ids['C.js'])} }`_D1 )--->",
+                );
+              });
+            });
+          });
+        });
+        describe('When the module being reloaded is a node in the cycle', () => {
+          it('Correctly reloads the modules in the cycle without bailing', () => {
+            createTestModuleByName(
+              'root.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                require(ids['A.js']);
+                module.exports = function Root() {};
+              },
+            );
+            createTestModuleByName(
+              'A.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                const B = require(ids['B.js']);
+                module.exports = 'A = ' + B;
+              },
+            );
+            createTestModuleByName(
+              'B.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                require(ids['D.js']);
+
+                const C = require(ids['C.js']);
+                module.exports = `B1{ ${C} }`;
+              },
+            );
+            createTestModuleByName(
+              'C.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                const B = require(ids['B.js']);
+                const D = require(ids['D.js']);
+                module.exports = `<---C1( ${[B, D].join('_')} )--->`;
+              },
+            );
+            createTestModuleByName(
+              'D.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                module.exports = 'D1';
+              },
+            );
+            moduleSystem.__r(ids['root.js']);
+
+            expect(moduleSystem.__r(ids['A.js'])).toBe(
+              'A = B1{ <---C1( [object Object]_D1 )---> }',
+            );
+
+            expect(moduleSystem.__r(ids['C.js'])).toBe(
+              '<---C1( [object Object]_D1 )--->',
+            );
+
+            moduleSystem.__accept(
+              ids['C.js'],
+              (global, require, importDefault, importAll, module, exports) => {
+                const B = require(ids['B.js']);
+                const D = require(ids['D.js']);
+                module.exports = `<---C2( ${[B, D].join('_')} )--->`;
+              },
+              [],
+              inverseCycleDeps,
+              undefined,
+            );
+
+            jest.runAllTimers();
+
+            expect(Refresh.performReactRefresh).toHaveBeenCalled();
+            expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
+
+            expect(moduleSystem.__r(ids['D.js'])).toBe('D1');
+
+            expect(moduleSystem.__r(ids['A.js'])).toBe(
+              'A = B1{ <---C2( [object Object]_D1 )---> }',
+            );
+
+            expect(moduleSystem.__r(ids['B.js'])).toBe(
+              'B1{ <---C2( [object Object]_D1 )---> }',
+            );
+
+            expect(moduleSystem.__r(ids['C.js'])).toBe(
+              '<---C2( [object Object]_D1 )--->',
+            );
+          });
+
+          describe('When the affected cycle contains functions', () => {
+            it('Correctly reloads the modules in the cycle without bailing', () => {
+              createTestModuleByName(
+                'root.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  require(ids['A.js']);
+                  module.exports = function Root() {};
+                },
+              );
+              createTestModuleByName(
+                'A.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  const B = require(ids['B.js']);
+                  module.exports = 'A = ' + B();
+                },
+              );
+              createTestModuleByName(
+                'B.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  require(ids['D.js']);
+
+                  const C = require(ids['C.js']);
+                  module.exports = () => `B1{ ${C} }`;
+                },
+              );
+              createTestModuleByName(
+                'C.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  const B = require(ids['B.js']);
+                  const D = require(ids['D.js']);
+                  module.exports = `<---C1( ${[B, D].join('_')} )--->`;
+                },
+              );
+              createTestModuleByName(
+                'D.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  module.exports = 'D1';
+                },
+              );
+              moduleSystem.__r(ids['root.js']);
+
+              expect(moduleSystem.__r(ids['A.js'])).toBe(
+                'A = B1{ <---C1( [object Object]_D1 )---> }',
+              );
+
+              expect(moduleSystem.__r(ids['C.js'])).toBe(
+                '<---C1( [object Object]_D1 )--->',
+              );
+
+              moduleSystem.__accept(
+                ids['B.js'],
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  require(ids['D.js']);
+
+                  const C = require(ids['C.js']);
+                  module.exports = () => `B2{ ${C} }`;
+                },
+                [],
+                inverseCycleDeps,
+                undefined,
+              );
+
+              jest.runAllTimers();
+
+              expect(Refresh.performReactRefresh).toHaveBeenCalled();
+              expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
+
+              expect(moduleSystem.__r(ids['D.js'])).toBe('D1');
+
+              expect(moduleSystem.__r(ids['A.js'])).toBe(
+                'A = B2{ <---C1( [object Object]_D1 )---> }',
+              );
+
+              expect(moduleSystem.__r(ids['B.js'])()).toBe(
+                'B2{ <---C1( [object Object]_D1 )---> }',
+              );
+
+              expect(moduleSystem.__r(ids['C.js'])).toBe(
+                '<---C1( [object Object]_D1 )--->',
+              );
+            });
+
+            describe('Dynamic Requires', () => {
+              it('Correctly reloads the modules in the cycle without bailing', () => {
+                createTestModuleByName(
+                  'root.js',
+                  (
+                    global,
+                    require,
+                    importDefault,
+                    importAll,
+                    module,
+                    exports,
+                  ) => {
+                    require(ids['A.js']);
+                    module.exports = function Root() {};
+                  },
+                );
+                createTestModuleByName(
+                  'A.js',
+                  (
+                    global,
+                    require,
+                    importDefault,
+                    importAll,
+                    module,
+                    exports,
+                  ) => {
+                    const B = require(ids['B.js']);
+                    module.exports = 'A = ' + B();
+                  },
+                );
+                createTestModuleByName(
+                  'B.js',
+                  (
+                    global,
+                    require,
+                    importDefault,
+                    importAll,
+                    module,
+                    exports,
+                  ) => {
+                    require(ids['D.js']);
+
+                    module.exports = () => `B1{ ${require(ids['C.js'])} }`;
+                  },
+                );
+                createTestModuleByName(
+                  'C.js',
+                  (
+                    global,
+                    require,
+                    importDefault,
+                    importAll,
+                    module,
+                    exports,
+                  ) => {
+                    const B = require(ids['B.js']);
+                    const D = require(ids['D.js']);
+                    module.exports = `<---C1( ${[B, D].join('_')} )--->`;
+                  },
+                );
+                createTestModuleByName(
+                  'D.js',
+                  (
+                    global,
+                    require,
+                    importDefault,
+                    importAll,
+                    module,
+                    exports,
+                  ) => {
+                    module.exports = 'D1';
+                  },
+                );
+                moduleSystem.__r(ids['root.js']);
+
+                expect(moduleSystem.__r(ids['A.js'])).toBe(
+                  "A = B1{ <---C1( () => `B1{ ${require(ids['C.js'])} }`_D1 )---> }",
+                );
+
+                expect(moduleSystem.__r(ids['C.js'])).toBe(
+                  "<---C1( () => `B1{ ${require(ids['C.js'])} }`_D1 )--->",
+                );
+
+                expect(moduleSystem.__r(ids['B.js'])()).toBe(
+                  "B1{ <---C1( () => `B1{ ${require(ids['C.js'])} }`_D1 )---> }",
+                );
+
+                moduleSystem.__accept(
+                  ids['B.js'],
+                  (
+                    global,
+                    require,
+                    importDefault,
+                    importAll,
+                    module,
+                    exports,
+                  ) => {
+                    require(ids['D.js']);
+
+                    module.exports = () => `B2{ ${require(ids['C.js'])} }`;
+                  },
+                  [],
+                  inverseCycleDeps,
+                  undefined,
+                );
+
+                jest.runAllTimers();
+
+                expect(Refresh.performReactRefresh).toHaveBeenCalled();
+                expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
+
+                expect(moduleSystem.__r(ids['D.js'])).toBe('D1');
+
+                expect(moduleSystem.__r(ids['A.js'])).toBe(
+                  "A = B2{ <---C1( () => `B2{ ${require(ids['C.js'])} }`_D1 )---> }",
+                );
+
+                expect(moduleSystem.__r(ids['B.js'])()).toBe(
+                  "B2{ <---C1( () => `B2{ ${require(ids['C.js'])} }`_D1 )---> }",
+                );
+
+                expect(moduleSystem.__r(ids['C.js'])).toBe(
+                  "<---C1( () => `B2{ ${require(ids['C.js'])} }`_D1 )--->",
+                );
+              });
+            });
+          });
+
+          it('Does not reload unaffected edges', () => {
+            createTestModuleByName(
+              'root.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                require(ids['A.js']);
+                module.exports = function Root() {};
+              },
+            );
+            createTestModuleByName(
+              'A.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                const B = require(ids['B.js']);
+                module.exports = 'A = ' + B;
+              },
+            );
+            const B = jest.fn(
+              (global, require, importDefault, importAll, module, exports) => {
+                require(ids['D.js']);
+
+                const C = require(ids['C.js']);
+                module.exports = `B1{ ${C} }`;
+              },
+            );
+            createTestModuleByName('B.js', B);
+
+            createTestModuleByName(
+              'C.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                const B = require(ids['B.js']);
+                const D = require(ids['D.js']);
+                module.exports = `<---C1( ${[B, D].join('_')} )--->`;
+              },
+            );
+            const D = jest.fn(
+              (global, require, importDefault, importAll, module, exports) => {
+                module.exports = 'D1';
+              },
+            );
+
+            createTestModuleByName('D.js', D);
+
+            moduleSystem.__r(ids['root.js']);
+            expect(moduleSystem.__r(ids['D.js'])).toBe('D1');
+
+            expect(D).toHaveBeenCalledTimes(1);
+            expect(B).toHaveBeenCalledTimes(1);
+
+            moduleSystem.__accept(
+              ids['C.js'],
+              (global, require, importDefault, importAll, module, exports) => {
+                const B = require(ids['B.js']);
+                const D = require(ids['D.js']);
+                module.exports = `<---C2( ${[B, D].join('_')} )--->`;
+              },
+              [],
+              inverseCycleDeps,
+              undefined,
+            );
+
+            jest.runAllTimers();
+
+            expect(moduleSystem.__r(ids['D.js'])).toBe('D1');
+            expect(D).toHaveBeenCalledTimes(1);
+            expect(B).toHaveBeenCalledTimes(2);
+          });
+        });
+        describe('When there are multiple modules being reloaded in the cycle', () => {
+          it('Correctly reloads the modules in the cycle without bailing', () => {
+            createTestModuleByName(
+              'root.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                require(ids['A.js']);
+                module.exports = function Root() {};
+              },
+            );
+            createTestModuleByName(
+              'A.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                const B = require(ids['B.js']);
+                module.exports = 'A = ' + B;
+              },
+            );
+            createTestModuleByName(
+              'B.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                require(ids['D.js']);
+
+                const C = require(ids['C.js']);
+                module.exports = `B1{ ${C} }`;
+              },
+            );
+            createTestModuleByName(
+              'C.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                const B = require(ids['B.js']);
+                const D = require(ids['D.js']);
+                module.exports = `<---C1( ${[B, D].join('_')} )--->`;
+              },
+            );
+            createTestModuleByName(
+              'D.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                module.exports = 'D1';
+              },
+            );
+            moduleSystem.__r(ids['root.js']);
+
+            expect(moduleSystem.__r(ids['A.js'])).toBe(
+              'A = B1{ <---C1( [object Object]_D1 )---> }',
+            );
+
+            expect(moduleSystem.__r(ids['C.js'])).toBe(
+              '<---C1( [object Object]_D1 )--->',
+            );
+
+            moduleSystem.__accept(
+              ids['C.js'],
+              (global, require, importDefault, importAll, module, exports) => {
+                const B = require(ids['B.js']);
+                const D = require(ids['D.js']);
+                module.exports = `<---C2( ${[B, D].join('_')} )--->`;
+              },
+              [],
+              inverseCycleDeps,
+              undefined,
+            );
+            moduleSystem.__accept(
+              ids['D.js'],
+              (global, require, importDefault, importAll, module, exports) => {
+                module.exports = `D2`;
+              },
+              [],
+              inverseCycleDeps,
+              undefined,
+            );
+
+            jest.runAllTimers();
+
+            expect(Refresh.performReactRefresh).toHaveBeenCalled();
+            expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
+
+            expect(moduleSystem.__r(ids['D.js'])).toBe('D2');
+
+            expect(moduleSystem.__r(ids['A.js'])).toBe(
+              'A = B1{ <---C2( [object Object]_D2 )---> }',
+            );
+
+            expect(moduleSystem.__r(ids['B.js'])).toBe(
+              'B1{ <---C2( [object Object]_D2 )---> }',
+            );
+
+            expect(moduleSystem.__r(ids['C.js'])).toBe(
+              '<---C2( [object Object]_D2 )--->',
+            );
+          });
+
+          describe('When the affected cycle contains exported properties', () => {
+            it('Correctly reloads the modules in the cycle without bailing', () => {
+              createTestModuleByName(
+                'root.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  require(ids['A.js']);
+                  module.exports = function Root() {};
+                },
+              );
+              createTestModuleByName(
+                'A.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  const B = require(ids['B.js']);
+                  module.exports = 'A = ' + B;
+                },
+              );
+              createTestModuleByName(
+                'B.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  require(ids['D.js']);
+
+                  const C = require(ids['C.js']);
+                  module.exports = `B1{ ${C.value} }`;
+                },
+              );
+              createTestModuleByName(
+                'C.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  const B = require(ids['B.js']);
+                  const D = require(ids['D.js']);
+                  module.exports = {
+                    value: `C with value: <---C1( ${[B, D].join('_')} )--->`,
+                  };
+                },
+              );
+              createTestModuleByName(
+                'D.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  module.exports = 'D1';
+                },
+              );
+              moduleSystem.__r(ids['root.js']);
+
+              expect(moduleSystem.__r(ids['A.js'])).toBe(
+                'A = B1{ C with value: <---C1( [object Object]_D1 )---> }',
+              );
+
+              expect(moduleSystem.__r(ids['C.js'])).toEqual({
+                value: 'C with value: <---C1( [object Object]_D1 )--->',
+              });
+
+              moduleSystem.__accept(
+                ids['C.js'],
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  const B = require(ids['B.js']);
+                  const D = require(ids['D.js']);
+                  module.exports = {
+                    value: `C with value: <---C2( ${[B, D].join('_')} )--->`,
+                  };
+                },
+                [],
+                inverseCycleDeps,
+                undefined,
+              );
+              moduleSystem.__accept(
+                ids['D.js'],
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  module.exports = `D2`;
+                },
+                [],
+                inverseCycleDeps,
+                undefined,
+              );
+
+              jest.runAllTimers();
+
+              expect(Refresh.performReactRefresh).toHaveBeenCalled();
+              expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
+
+              expect(moduleSystem.__r(ids['D.js'])).toBe('D2');
+
+              expect(moduleSystem.__r(ids['A.js'])).toBe(
+                'A = B1{ C with value: <---C2( [object Object]_D2 )---> }',
+              );
+
+              expect(moduleSystem.__r(ids['B.js'])).toBe(
+                'B1{ C with value: <---C2( [object Object]_D2 )---> }',
+              );
+
+              expect(moduleSystem.__r(ids['C.js'])).toEqual({
+                value: 'C with value: <---C2( [object Object]_D2 )--->',
+              });
+            });
+          });
+
+          describe('When the affected cycle contains functions', () => {
+            it('Correctly reloads the modules in the cycle without bailing', () => {
+              createTestModuleByName(
+                'root.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  require(ids['A.js']);
+                  module.exports = function Root() {};
+                },
+              );
+              createTestModuleByName(
+                'A.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  const B = require(ids['B.js']);
+                  module.exports = 'A = ' + B();
+                },
+              );
+              createTestModuleByName(
+                'B.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  require(ids['D.js']);
+
+                  const C = require(ids['C.js']);
+                  module.exports = () => `B1{ ${C} }`;
+                },
+              );
+              createTestModuleByName(
+                'C.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  const B = require(ids['B.js']);
+                  const D = require(ids['D.js']);
+                  module.exports = `<---C1( ${[B, D].join('_')} )--->`;
+                },
+              );
+              createTestModuleByName(
+                'D.js',
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  module.exports = 'D1';
+                },
+              );
+              moduleSystem.__r(ids['root.js']);
+
+              expect(moduleSystem.__r(ids['A.js'])).toBe(
+                'A = B1{ <---C1( [object Object]_D1 )---> }',
+              );
+
+              expect(moduleSystem.__r(ids['C.js'])).toBe(
+                '<---C1( [object Object]_D1 )--->',
+              );
+
+              moduleSystem.__accept(
+                ids['B.js'],
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  require(ids['D.js']);
+
+                  const C = require(ids['C.js']);
+                  module.exports = () => `B2{ ${C} }`;
+                },
+                [],
+                inverseCycleDeps,
+                undefined,
+              );
+              moduleSystem.__accept(
+                ids['D.js'],
+                (
+                  global,
+                  require,
+                  importDefault,
+                  importAll,
+                  module,
+                  exports,
+                ) => {
+                  module.exports = 'D2';
+                },
+                [],
+                inverseCycleDeps,
+                undefined,
+              );
+
+              jest.runAllTimers();
+
+              expect(Refresh.performReactRefresh).toHaveBeenCalled();
+              expect(Refresh.performFullRefresh).not.toHaveBeenCalled();
+
+              expect(moduleSystem.__r(ids['D.js'])).toBe('D2');
+
+              expect(moduleSystem.__r(ids['A.js'])).toBe(
+                'A = B2{ <---C1( [object Object]_D2 )---> }',
+              );
+
+              expect(moduleSystem.__r(ids['B.js'])()).toBe(
+                'B2{ <---C1( [object Object]_D2 )---> }',
+              );
+
+              expect(moduleSystem.__r(ids['C.js'])).toBe(
+                '<---C1( [object Object]_D2 )--->',
+              );
+            });
+          });
+        });
+
+        describe('When the root is a part of the cycle', () => {
+          const ids = {
+            'root.js': 0,
+            'A.js': 1,
+            'B.js': 2,
+          };
+
+          const inverseCycleDeps = {
+            [ids['A.js']]: [ids['root.js']],
+            [ids['root.js']]: [ids['A.js']],
+            [ids['B.js']]: [ids['A.js']],
+          };
+
+          function createTestModuleByName(
+            fileName: string,
+            factory: () => any,
+          ) {
+            return createModule(moduleSystem, ids[fileName], fileName, factory);
+          }
+
+          it('Correctly reloads the modules in the cycle without bailing', () => {
+            createTestModuleByName(
+              'root.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                const A = require(ids['A.js']);
+                module.exports = 'root - ' + A;
+              },
+            );
+            createTestModuleByName(
+              'A.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                require(ids['root.js']);
+                const B = require(ids['B.js']);
+                module.exports = 'A - ' + B;
+              },
+            );
+
+            createTestModuleByName(
+              'B.js',
+              (global, require, importDefault, importAll, module, exports) => {
+                module.exports = 'B';
+              },
+            );
+            expect(moduleSystem.__r(ids['root.js'])).toBe('root - A - B');
+            expect(moduleSystem.__r(ids['A.js'])).toBe('A - B');
+            expect(moduleSystem.__r(ids['B.js'])).toBe('B');
+
+            moduleSystem.__accept(
+              ids['B.js'],
+              (global, require, importDefault, importAll, module, exports) => {
+                module.exports = 'B1';
+              },
+              [],
+              inverseCycleDeps,
+              undefined,
+            );
+
+            jest.runAllTimers();
+            expect(moduleSystem.__r(ids['root.js'])).toBe('root - A - B1');
+            expect(moduleSystem.__r(ids['A.js'])).toBe('A - B1');
+            expect(moduleSystem.__r(ids['B.js'])).toBe('B1');
           });
         });
       });
     });
   });
+});
+
+function toThrowStrictEquals(received, expected) {
+  let thrown = null;
+  try {
+    received();
+  } catch (e) {
+    thrown = {value: e};
+  }
+  const pass = thrown && thrown.value === expected;
+  if (pass) {
+    return {
+      message: () =>
+        `expected function not to throw ${this.utils.printExpected(
+          expected,
+        )} but it did`,
+      pass: true,
+    };
+  } else {
+    return {
+      message: () => {
+        if (thrown) {
+          return `expected function to throw ${this.utils.printExpected(
+            expected,
+          )} but received ${this.utils.printReceived(thrown.value)}`;
+        } else {
+          return `expected function to throw ${this.utils.printExpected(
+            expected,
+          )} but it did not throw`;
+        }
+      },
+      pass: false,
+    };
+  }
+}
+
+expect.extend({
+  toThrowStrictEquals,
 });

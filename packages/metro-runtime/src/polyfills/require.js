@@ -17,7 +17,17 @@
 declare var __DEV__: boolean;
 declare var __METRO_GLOBAL_PREFIX__: string;
 
-type DependencyMap = Array<ModuleID>;
+// A simpler $ArrayLike<T>. Not iterable and doesn't have a `length`.
+// This is compatible with actual arrays as well as with objects that look like
+// {0: 'value', 1: '...'}
+type ArrayIndexable<T> = interface {
+  +[indexer: number]: T,
+};
+type DependencyMap = $ReadOnly<
+  ArrayIndexable<ModuleID> & {
+    paths?: {[id: ModuleID]: string},
+  },
+>;
 type Exports = any;
 type FactoryFn = (
   global: Object,
@@ -75,7 +85,6 @@ var modules = clear();
 // Don't use a Symbol here, it would pull in an extra polyfill with all sorts of
 // additional stuff (e.g. Array.from).
 const EMPTY = {};
-const CYCLE_DETECTED = {};
 const {hasOwnProperty} = {};
 
 if (__DEV__) {
@@ -398,7 +407,7 @@ function loadModuleImplementation(
   }
 
   if (module.hasError) {
-    throw moduleThrewError(moduleId, module.error);
+    throw module.error;
   }
 
   if (__DEV__) {
@@ -498,16 +507,6 @@ function unknownModuleError(id: ModuleID): Error {
   return Error(message);
 }
 
-function moduleThrewError(id: ModuleID, error: any): Error {
-  const displayName = (__DEV__ && modules[id] && modules[id].verboseName) || id;
-  return Error(
-    'Requiring module "' +
-      displayName +
-      '", which threw an exception: ' +
-      error,
-  );
-}
-
 if (__DEV__) {
   // $FlowFixMe[prop-missing]
   metroRequire.Systrace = {
@@ -544,57 +543,39 @@ if (__DEV__) {
     changedModuleID: ModuleID,
     newFactory: FactoryFn,
   ) {
-    // Set the visited flag for each module in the cycles set to avoid infinite recursion
-    const visited = new Set<ModuleID>();
-    cycles.forEach(id => visited.add(id));
+    // We need to reload all the modules that are part of the cycles
+    // We also need to purge the reloaded module
+    const modulesToReload = new Set(cycles).add(changedModuleID);
 
-    // Initialize an array to store the inverse dependencies of the current module
-    const inverseDeps = new Set<ModuleID>();
-
-    // Climb up the inverse dependencies and add them to the array
-    cycles.forEach(moduleId => {
-      let inverseDep = inverseDependencies[moduleId];
-      while (inverseDep != null) {
-        const current = inverseDep.shift();
-
-        if (visited.has(current)) {
-          // A cycle has been detected, so we break the loop
-          break;
-        }
-
-        if (current == null) {
-          break;
-        }
-        inverseDeps.add(current);
-        visited.add(current);
-        inverseDep = inverseDependencies[current];
-      }
+    // Climb up the inverse dependencies and add them to the set
+    // We do this on a clone, so we don't modify modulesToReload during iteration
+    Array.from(modulesToReload, moduleId => {
+      (inverseDependencies[moduleId] ?? []).forEach(id =>
+        modulesToReload.add(id),
+      );
     });
 
-    // Reload and redefine the inverse dependencies of the current module
-    const modulesToReload = Array.from(inverseDeps)
-      .concat(Array.from(cycles))
-      .map(id => {
-        const mod = modules[id];
+    // Dispose of all the modules that we need to reload
+    modulesToReload.forEach(id => {
+      const mod = Reflect.get(modules, id);
 
-        if (!mod) {
-          return null;
-        }
+      if (!mod) {
+        return;
+      }
 
-        mod.hot?.dispose?.();
-        Reflect.deleteProperty(modules, id);
-        return {module: mod, id};
-      });
+      // Cleanup
+      Reflect.deleteProperty(modules, id);
+      mod.hot?.dispose?.();
+      // Do I actually need to dispose here, or is deleting the modules enough?
+      // The tests seem to pass even without disposing.
 
-    modulesToReload.filter(Boolean).map(({module, id}) => {
+      // Redefining
       define(
-        id === changedModuleID ? newFactory : module.factory,
+        // If this is the changed module, we need to define it with the new factory
+        id === changedModuleID ? newFactory : mod.factory,
         id,
-        module.dependencyMap ?? [],
+        mod.dependencyMap ?? [],
       );
-      modules[id]?.hot?.accept?.();
-
-      return {module, id};
     });
   }
 
@@ -712,7 +693,6 @@ if (__DEV__) {
     // If we reached here, it is likely that hot reload will be successful.
     // Run the actual factories.
     const seenModuleIDs = new Set<ModuleID>();
-
     for (let i = 0; i < updatedModuleIDs.length; i++) {
       const updatedID = updatedModuleIDs[i];
       if (seenModuleIDs.has(updatedID)) {
@@ -721,7 +701,6 @@ if (__DEV__) {
       seenModuleIDs.add(updatedID);
 
       const updatedMod = modules[updatedID];
-
       if (updatedMod == null) {
         throw new Error('[Refresh] Expected to find the updated module.');
       }
@@ -731,7 +710,6 @@ if (__DEV__) {
         updatedID === id ? factory : undefined,
         updatedID === id ? dependencyMap : undefined,
       );
-
       const nextExports = updatedMod.publicModule.exports;
 
       if (didError) {
