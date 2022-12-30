@@ -557,14 +557,14 @@ if (__DEV__) {
 
     // Dispose of all the modules that we need to reload
     modulesToReload.forEach(id => {
-      const mod = Reflect.get(modules, id);
+      const mod = modules[id];
 
       if (!mod) {
         return;
       }
 
       // Cleanup
-      Reflect.deleteProperty(modules, id);
+      delete modules[id];
       mod.hot?.dispose?.();
       // Do I actually need to dispose here, or is deleting the modules enough?
       // The tests seem to pass even without disposing.
