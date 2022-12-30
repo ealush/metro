@@ -85,7 +85,6 @@ var modules = clear();
 // Don't use a Symbol here, it would pull in an extra polyfill with all sorts of
 // additional stuff (e.g. Array.from).
 const EMPTY = {};
-const CYCLE_DETECTED = {};
 const {hasOwnProperty} = {};
 
 if (__DEV__) {
@@ -538,7 +537,49 @@ if (__DEV__) {
 
   let reactRefreshTimeout: null | TimeoutID = null;
 
-  const metroHotUpdateModule = function (
+  function reloadCycles(
+    cycles: Set<ModuleID>,
+    inverseDependencies: {[key: ModuleID]: Array<ModuleID>},
+    changedModuleID: ModuleID,
+    newFactory: FactoryFn,
+  ) {
+    // We need to reload all the modules that are part of the cycles
+    // We also need to purge the reloaded module
+    const modulesToReload = new Set(cycles).add(changedModuleID);
+
+    // Climb up the inverse dependencies and add them to the set
+    // We do this on a clone, so we don't modify modulesToReload during iteration
+    Array.from(modulesToReload, moduleId => {
+      (inverseDependencies[moduleId] ?? []).forEach(id =>
+        modulesToReload.add(id),
+      );
+    });
+
+    // Dispose of all the modules that we need to reload
+    modulesToReload.forEach(id => {
+      const mod = Reflect.get(modules, id);
+
+      if (!mod) {
+        return;
+      }
+
+      // Cleanup
+      Reflect.deleteProperty(modules, id);
+      mod.hot?.dispose?.();
+      // Do I actually need to dispose here, or is deleting the modules enough?
+      // The tests seem to pass even without disposing.
+
+      // Redefining
+      define(
+        // If this is the changed module, we need to define it with the new factory
+        id === changedModuleID ? newFactory : mod.factory,
+        id,
+        mod.dependencyMap ?? [],
+      );
+    });
+  }
+
+  function metroHotUpdateModule(
     id: ModuleID,
     factory: FactoryFn,
     dependencyMap: DependencyMap,
@@ -582,70 +623,71 @@ if (__DEV__) {
     // have side effects and lead to confusing and meaningless crashes.
 
     let didBailOut = false;
-    let updatedModuleIDs;
-    try {
-      updatedModuleIDs = topologicalSort(
-        [id], // Start with the changed module and go upwards
-        pendingID => {
-          const pendingModule = modules[pendingID];
-          if (pendingModule == null) {
-            // Nothing to do.
-            return [];
+
+    const {updatedModuleIDs, cycles} = topologicalSort(
+      [id], // Start with the changed module and go upwards
+      function getEdges(pendingID) {
+        const pendingModule = modules[pendingID];
+        if (pendingModule == null) {
+          // Nothing to do.
+          return [];
+        }
+        const pendingHot = pendingModule.hot;
+        if (pendingHot == null) {
+          throw new Error(
+            '[Refresh] Expected module.hot to always exist in DEV.',
+          );
+        }
+        // A module can be accepted manually from within itself.
+        let canAccept = pendingHot._didAccept;
+        if (!canAccept && Refresh != null) {
+          // Or React Refresh may mark it accepted based on exports.
+          const isBoundary = isReactRefreshBoundary(
+            Refresh,
+            pendingModule.publicModule.exports,
+          );
+          if (isBoundary) {
+            canAccept = true;
+            refreshBoundaryIDs.add(pendingID);
           }
-          const pendingHot = pendingModule.hot;
-          if (pendingHot == null) {
-            throw new Error(
-              '[Refresh] Expected module.hot to always exist in DEV.',
-            );
-          }
-          // A module can be accepted manually from within itself.
-          let canAccept = pendingHot._didAccept;
-          if (!canAccept && Refresh != null) {
-            // Or React Refresh may mark it accepted based on exports.
-            const isBoundary = isReactRefreshBoundary(
-              Refresh,
-              pendingModule.publicModule.exports,
-            );
-            if (isBoundary) {
-              canAccept = true;
-              refreshBoundaryIDs.add(pendingID);
-            }
-          }
-          if (canAccept) {
-            // Don't look at parents.
-            return [];
-          }
-          // If we bubble through the roof, there is no way to do a hot update.
-          // Bail out altogether. This is the failure case.
-          const parentIDs = inverseDependencies[pendingID];
-          if (parentIDs.length === 0) {
-            // Reload the app because the hot reload can't succeed.
-            // This should work both on web and React Native.
-            performFullRefresh('No root boundary', {
-              source: mod,
-              failed: pendingModule,
-            });
-            didBailOut = true;
-            return [];
-          }
-          // This module can't handle the update but maybe all its parents can?
-          // Put them all in the queue to run the same set of checks.
-          return parentIDs;
-        },
-        () => didBailOut, // Should we stop?
-      ).reverse();
-    } catch (e) {
-      if (e === CYCLE_DETECTED) {
-        performFullRefresh('Dependency cycle', {
-          source: mod,
-        });
-        return;
-      }
-      throw e;
-    }
+        }
+        if (canAccept) {
+          // Don't look at parents.
+          return [];
+        }
+        // If we bubble through the roof, there is no way to do a hot update.
+        // Bail out altogether. This is the failure case.
+        const parentIDs = inverseDependencies[pendingID];
+        if (parentIDs.length === 0) {
+          // Reload the app because the hot reload can't succeed.
+          // This should work both on web and React Native.
+          performFullRefresh('No root boundary', {
+            source: mod,
+            failed: pendingModule,
+          });
+          didBailOut = true;
+          return [];
+        }
+        // This module can't handle the update but maybe all its parents can?
+        // Put them all in the queue to run the same set of checks.
+        return parentIDs;
+      },
+      function earlyStop() {
+        return didBailOut;
+      }, // Should we stop?
+    );
 
     if (didBailOut) {
       return;
+    }
+
+    if (cycles.size) {
+      reloadCycles(cycles, inverseDependencies, id, factory);
+      // only reload the root module, go down from there...
+      updatedModuleIDs.length = 1;
+    } else {
+      // Reversing the list ensures that we execute modules in the correct order.
+      updatedModuleIDs.reverse();
     }
 
     // If we reached here, it is likely that hot reload will be successful.
@@ -750,19 +792,23 @@ if (__DEV__) {
         }, 30);
       }
     }
-  };
+  }
 
-  const topologicalSort = function <T>(
+  function topologicalSort<T>(
     roots: Array<T>,
     getEdges: T => Array<T>,
     earlyStop: T => boolean,
-  ): Array<T> {
+  ): {
+    updatedModuleIDs: Array<T>,
+    cycles: Set<T>,
+  } {
     const result = [];
     const visited = new Set<mixed>();
     const stack = new Set<mixed>();
+    const cycles = new Set<T>();
     function traverseDependentNodes(node: T): void {
       if (stack.has(node)) {
-        throw CYCLE_DETECTED;
+        cycles.add(node);
       }
       if (visited.has(node)) {
         return;
@@ -783,8 +829,11 @@ if (__DEV__) {
     roots.forEach(root => {
       traverseDependentNodes(root);
     });
-    return result;
-  };
+    return {
+      updatedModuleIDs: result,
+      cycles,
+    };
+  }
 
   const runUpdatedModule = function (
     id: ModuleID,
