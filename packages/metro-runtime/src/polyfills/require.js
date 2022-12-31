@@ -576,6 +576,14 @@ if (__DEV__) {
         id,
         mod.dependencyMap ?? [],
       );
+
+      if (!modules[id]) {
+        throw new Error('[Refresh] Expected to find the module.');
+      }
+
+      // We need to re-register the exports for React Refresh
+      // If we don't do it, `shouldInvalidateReactRefreshBoundary` will return ture
+      modules[id].publicModule.exports = mod.publicModule.exports;
     });
   }
 
@@ -685,10 +693,10 @@ if (__DEV__) {
       reloadCycles(cycles, inverseDependencies, id, factory);
       // only reload the root module, go down from there...
       updatedModuleIDs.length = 1;
-    } else {
-      // Reversing the list ensures that we execute modules in the correct order.
-      updatedModuleIDs.reverse();
     }
+
+    // Reversing the list ensures that we execute modules in the correct order.
+    updatedModuleIDs.reverse();
 
     // If we reached here, it is likely that hot reload will be successful.
     // Run the actual factories.
