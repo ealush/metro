@@ -583,7 +583,7 @@ if (__DEV__) {
 
       // We need to re-register the exports for React Refresh
       // If we don't do it, `shouldInvalidateReactRefreshBoundary` will return ture
-      modules[id].publicModule.exports = mod.publicModule.exports;
+      modules[id].publicModule.exports = EMPTY;
     });
   }
 
@@ -718,6 +718,7 @@ if (__DEV__) {
         updatedID === id ? factory : undefined,
         updatedID === id ? dependencyMap : undefined,
       );
+
       const nextExports = updatedMod.publicModule.exports;
 
       if (didError) {
@@ -981,8 +982,14 @@ if (__DEV__) {
     prevExports: Exports,
     nextExports: Exports,
   ) => {
+    if (prevExports === EMPTY) {
+      // We are very likely within a cycle, and the EMPTY exports is due to reloadCycles disposing of the module
+      return false;
+    }
+
     const prevSignature = getRefreshBoundarySignature(Refresh, prevExports);
     const nextSignature = getRefreshBoundarySignature(Refresh, nextExports);
+
     if (prevSignature.length !== nextSignature.length) {
       return true;
     }
