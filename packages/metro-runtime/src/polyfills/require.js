@@ -87,6 +87,8 @@ var modules = clear();
 const EMPTY = {};
 const {hasOwnProperty} = {};
 
+const EMPTY_EXPORTS = Object.freeze({});
+
 if (__DEV__) {
   global.$RefreshReg$ = () => {};
   global.$RefreshSig$ = () => type => type;
@@ -543,6 +545,10 @@ if (__DEV__) {
     changedModuleID: ModuleID,
     newFactory: FactoryFn,
   ) {
+    if (!cycles.size) {
+      return;
+    }
+
     // We need to reload all the modules that are part of the cycles
     // We also need to purge the reloaded module
     const modulesToReload = new Set(cycles).add(changedModuleID);
@@ -583,7 +589,7 @@ if (__DEV__) {
 
       // We need to re-register the exports for React Refresh
       // If we don't do it, `shouldInvalidateReactRefreshBoundary` will return ture
-      modules[id].publicModule.exports = EMPTY;
+      modules[id].publicModule.exports = EMPTY_EXPORTS;
     });
   }
 
@@ -689,8 +695,9 @@ if (__DEV__) {
       return;
     }
 
+    reloadCycles(cycles, inverseDependencies, id, factory);
+
     if (cycles.size) {
-      reloadCycles(cycles, inverseDependencies, id, factory);
       // only reload the root module, go down from there...
       updatedModuleIDs.length = 1;
     }
@@ -982,7 +989,7 @@ if (__DEV__) {
     prevExports: Exports,
     nextExports: Exports,
   ) => {
-    if (prevExports === EMPTY) {
+    if (prevExports === EMPTY_EXPORTS) {
       // We are very likely within a cycle, and the EMPTY exports is due to reloadCycles disposing of the module
       return false;
     }
